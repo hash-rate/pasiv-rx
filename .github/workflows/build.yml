@@ -1,5 +1,5 @@
-# Builds only on a tag or by hand: Actions minutes are billed (Windows at 2x),
-# and the signed binary is cut from a tagged build, never from a branch.
+# Builds only on a tag or by hand: the signed binaries are cut from a tagged
+# build, never from a branch. (Public repo: hosted runners cost nothing.)
 # Signing happens on the control Mac (pasiv: tool/cpu-engine-release.sh) —
 # CI never holds the key.
 name: build
@@ -18,6 +18,9 @@ jobs:
             exe: pasiv-rx.exe
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            exe: pasiv-rx
+          - os: macos-14
+            target: aarch64-apple-darwin
             exe: pasiv-rx
     runs-on: ${{ matrix.os }}
     steps:

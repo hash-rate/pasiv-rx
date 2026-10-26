@@ -1,0 +1,16 @@
+--- a/src/virtual_memory.c
++++ b/src/virtual_memory.c
+@@ -146,6 +146,13 @@
+ 	mem = mmap(NULL, bytes, PAGE_READWRITE | RESERVED_FLAGS | PEXTRA, MAP_ANONYMOUS | MAP_PRIVATE | MEXTRA, -1, 0);
+ 	if (mem == MAP_FAILED)
+ 		mem = NULL;
++#if defined(__linux__) && defined(MADV_HUGEPAGE)
++	/* pasiv-rx patch 0001: ask for transparent huge pages when hugetlb pages
++	   were unavailable (THP "madvise" mode, the Ubuntu default). XMRig does
++	   the same; without it the dataset runs on 4 KB pages (~25% slower). */
++	if (mem != NULL)
++		madvise(mem, bytes, MADV_HUGEPAGE);
++#endif
+ #if defined(USE_PTHREAD_JIT_WP) && defined(MAC_OS_VERSION_11_0) \
+ 	&& MAC_OS_X_VERSION_MAX_ALLOWED >= MAC_OS_VERSION_11_0
+ 	if (__builtin_available(macOS 11.0, *)) {
