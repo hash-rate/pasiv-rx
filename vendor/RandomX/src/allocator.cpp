@@ -31,11 +31,29 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "intrin_portable.h"
 #include "virtual_memory.h"
 #include "common.hpp"
+#if defined(__linux__)
+#include <stdlib.h>
+#include <sys/mman.h>
+#endif
 
 namespace randomx {
 
 	template<size_t alignment>
 	void* AlignedAllocator<alignment>::allocMemory(size_t count) {
+#if defined(__linux__) && defined(MADV_HUGEPAGE)
+		/* pasiv-rx patch 0003: without hugetlb pages, VM scratchpads (2 MB,
+		   read at random) sit on 4 KB pages and thrash the TLB. Align them to
+		   2 MB and ask for a transparent huge page, as XMRig does. Freed by
+		   rx_aligned_free (free) like any posix_memalign block. */
+		const size_t huge = 2 * 1024 * 1024;
+		if (count >= huge) {
+			void *mem = nullptr;
+			if (posix_memalign(&mem, huge, count) != 0 || mem == nullptr)
+				throw std::bad_alloc();
+			madvise(mem, count, MADV_HUGEPAGE);
+			return mem;
+		}
+#endif
 		void *mem = rx_aligned_alloc(count, alignment);
 		if (mem == nullptr)
 			throw std::bad_alloc();

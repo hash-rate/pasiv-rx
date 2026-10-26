@@ -71,6 +71,13 @@ namespace randomx {
 		int registerUsage[RegistersCount];
 		uint8_t* code;
 		int32_t codePos;
+		// pasiv-rx patch 0002 (dead-CFROUND elimination, after XMRig's JIT):
+		// the last CFROUND (instruction index, code offset, length) and the
+		// last instruction whose result depends on the rounding mode.
+		int prevCFROUND;
+		int32_t prevCFROUNDPos;
+		int32_t prevCFROUNDLen;
+		int prevFPOperation;
 
 		void generateProgramPrologue(Program&, ProgramConfiguration&);
 		void generateProgramEpilogue(Program&, ProgramConfiguration&);

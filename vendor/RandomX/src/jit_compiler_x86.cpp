@@ -306,6 +306,10 @@ namespace randomx {
 		for (unsigned i = 0; i < RegistersCount; ++i) {
 			registerUsage[i] = -1;
 		}
+		prevCFROUND = -1;
+		prevCFROUNDPos = -1;
+		prevCFROUNDLen = 0;
+		prevFPOperation = -1;
 
 		codePos = prologueSize;
 		memcpy(code + codePos - 48, &pcfg.eMask, sizeof(pcfg.eMask));
@@ -708,6 +712,7 @@ namespace randomx {
 	}
 
 	void JitCompilerX86::h_FADD_R(Instruction& instr, int i) {
+		prevFPOperation = i;
 		instr.dst %= RegisterCountFlt;
 		instr.src %= RegisterCountFlt;
 		emit(REX_ADDPD);
@@ -715,6 +720,7 @@ namespace randomx {
 	}
 
 	void JitCompilerX86::h_FADD_M(Instruction& instr, int i) {
+		prevFPOperation = i;
 		instr.dst %= RegisterCountFlt;
 		genAddressReg(instr);
 		emit(REX_CVTDQ2PD_XMM12);
@@ -723,6 +729,7 @@ namespace randomx {
 	}
 
 	void JitCompilerX86::h_FSUB_R(Instruction& instr, int i) {
+		prevFPOperation = i;
 		instr.dst %= RegisterCountFlt;
 		instr.src %= RegisterCountFlt;
 		emit(REX_SUBPD);
@@ -730,6 +737,7 @@ namespace randomx {
 	}
 
 	void JitCompilerX86::h_FSUB_M(Instruction& instr, int i) {
+		prevFPOperation = i;
 		instr.dst %= RegisterCountFlt;
 		genAddressReg(instr);
 		emit(REX_CVTDQ2PD_XMM12);
@@ -744,6 +752,7 @@ namespace randomx {
 	}
 
 	void JitCompilerX86::h_FMUL_R(Instruction& instr, int i) {
+		prevFPOperation = i;
 		instr.dst %= RegisterCountFlt;
 		instr.src %= RegisterCountFlt;
 		emit(REX_MULPD);
@@ -751,6 +760,7 @@ namespace randomx {
 	}
 
 	void JitCompilerX86::h_FDIV_M(Instruction& instr, int i) {
+		prevFPOperation = i;
 		instr.dst %= RegisterCountFlt;
 		genAddressReg(instr);
 		emit(REX_CVTDQ2PD_XMM12);
@@ -760,12 +770,29 @@ namespace randomx {
 	}
 
 	void JitCompilerX86::h_FSQRT_R(Instruction& instr, int i) {
+		prevFPOperation = i;
 		instr.dst %= RegisterCountFlt;
 		emit(SQRTPD);
 		emitByte(0xe4 + 9 * instr.dst);
 	}
 
 	void JitCompilerX86::h_CFROUND(Instruction& instr, int i) {
+		// pasiv-rx patch 0002: a CFROUND whose rounding mode is replaced by this
+		// one before any rounding-dependent FP instruction can observe it is dead
+		// (ldmxcsr is microcoded and slow on Intel); overwrite it with NOPs.
+		// Same rule as XMRig's JIT (GPL-3.0); CBRANCH below keeps it sound.
+		if (prevCFROUND >= 0 && prevCFROUND > prevFPOperation) {
+			int32_t pos = prevCFROUNDPos;
+			int32_t left = prevCFROUNDLen;
+			while (left > 0) {
+				int32_t n = left > 8 ? 8 : left;
+				memcpy(code + pos, NOPX[n - 1], n);
+				pos += n;
+				left -= n;
+			}
+		}
+		prevCFROUND = i;
+		prevCFROUNDPos = codePos;
 		emit(REX_MOV_RR64);
 		emitByte(0xc0 + instr.src);
 		int rotate = (13 - (instr.getImm32() & 63)) & 63;
@@ -774,11 +801,17 @@ namespace randomx {
 			emitByte(rotate);
 		}
 		emit(AND_OR_MOV_LDMXCSR);
+		prevCFROUNDLen = codePos - prevCFROUNDPos;
 	}
 
 	void JitCompilerX86::h_CBRANCH(Instruction& instr, int i) {
 		int reg = instr.dst;
 		int target = registerUsage[reg] + 1;
+		// pasiv-rx patch 0002: jumping back over a rounding-dependent FP
+		// instruction re-runs it, so treat it as if it happened here.
+		if (target <= prevFPOperation) {
+			prevFPOperation = i;
+		}
 		emit(REX_ADD_I);
 		emitByte(0xc0 + reg);
 		int shift = instr.getModCond() + ConditionOffset;
