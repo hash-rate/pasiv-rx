@@ -7,6 +7,10 @@ description = "Spike: Pasiv's own RandomX CPU miner (tevador/RandomX, BSD-3) wit
 
 [dependencies]
 serde_json = "1"
+# TLS to the pool (port 443 fallback). ring, not aws-lc: no NASM/cmake on Windows.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
+ring = "0.17"
 
 [build-dependencies]
 cmake = "0.1"

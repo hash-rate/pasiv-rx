@@ -1,7 +1,9 @@
 // Build tevador/RandomX (vendored, v1.2.1, BSD-3) as a static library.
 fn main() {
     let mut cfg = cmake::Config::new("vendor/RandomX");
-    cfg.define("ARCH", "native").profile("Release").build_target("randomx");
+    // Generic build (RandomX's ARCH=default): runs on any x86-64 and picks
+    // AES/AVX2/SSSE3 at runtime, so one signed binary serves every rig.
+    cfg.profile("Release").build_target("randomx");
     // The cmake crate replaces CMAKE_<LANG>_FLAGS_RELEASE with cc's flags, which
     // on MSVC carry no optimisation level: RandomX's AES fill and Blake2 then
     // run unoptimised, measured at 52% of XMRig on the tower. Pin it.

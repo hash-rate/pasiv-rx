@@ -16,7 +16,6 @@ extern "C" {
     pub fn randomx_get_flags() -> c_int;
     pub fn randomx_alloc_cache(flags: c_int) -> *mut Cache;
     pub fn randomx_init_cache(cache: *mut Cache, key: *const c_void, key_size: usize);
-    pub fn randomx_release_cache(cache: *mut Cache);
     pub fn randomx_alloc_dataset(flags: c_int) -> *mut Dataset;
     pub fn randomx_dataset_item_count() -> c_ulong;
     pub fn randomx_init_dataset(d: *mut Dataset, c: *mut Cache, start: c_ulong, count: c_ulong);

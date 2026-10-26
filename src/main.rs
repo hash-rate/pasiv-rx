@@ -5,14 +5,16 @@
 //! Stock XMRig, even Pasiv-signed, is quarantined on write (2026-10-24).
 //!
 //! Usage:
-//!   pasiv-rx --url host:port --user LOGIN [--pass x] [--threads N] [--seconds S]
+//!   pasiv-rx --url [tls://]host:port [--url ...] --user LOGIN [--pass x] [--threads N] [--seconds S]
+//!   (several --url = failover, tried in order; `--tls-fingerprint SHA256`
+//!   after a tls:// url pins that pool's certificate)
 //!   pasiv-rx --bench [--threads N] [--seconds S]
+mod net;
 mod rx;
 
 use rx::Shared;
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
+use std::sync::mpsc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -34,9 +36,10 @@ struct Data {
     dataset: Shared<rx::Dataset>,
 }
 
-struct Conn {
-    stream: TcpStream,
-    session: String,
+struct Share {
+    job_id: String,
+    nonce: u32,
+    hash: [u8; 32],
 }
 
 struct Miner {
@@ -45,7 +48,8 @@ struct Miner {
     job: Mutex<Option<(u64, Job)>>,
     generation: AtomicU64,
     data: RwLock<Data>,
-    conn: Mutex<Option<Conn>>,
+    /// The live pool session's share queue; None while disconnected.
+    shares: Mutex<Option<mpsc::Sender<Share>>>,
     next_id: AtomicU64,
     hashes: AtomicU64,
     accepted: AtomicU64,
@@ -123,7 +127,7 @@ impl Miner {
                 cache: Shared(cache),
                 dataset: Shared(dataset),
             }),
-            conn: Mutex::new(None),
+            shares: Mutex::new(None),
             next_id: AtomicU64::new(10),
             hashes: AtomicU64::new(0),
             accepted: AtomicU64::new(0),
@@ -227,66 +231,56 @@ impl Miner {
         unsafe { rx::randomx_destroy_vm(vm) };
     }
 
-    fn send(&self, msg: &Value) -> bool {
-        let mut c = self.conn.lock().unwrap();
-        let Some(conn) = c.as_mut() else { return false };
-        let mut line = msg.to_string();
-        line.push('\n');
-        conn.stream.write_all(line.as_bytes()).is_ok()
-    }
-
     fn submit(&self, job_id: &str, nonce: u32, hash: &[u8; 32]) {
-        let session = match self.conn.lock().unwrap().as_ref() {
-            Some(c) => c.session.clone(),
-            None => return,
-        };
-        let id = self.next_id.fetch_add(1, Relaxed);
-        self.send(&json!({
-            "id": id, "jsonrpc": "2.0", "method": "submit",
-            "params": {"id": session, "job_id": job_id,
-                       "nonce": hex(&nonce.to_le_bytes()), "result": hex(hash)}
-        }));
-    }
-
-    fn pool(self: Arc<Self>, url: String, user: String, pass: String) {
-        while !self.stop.load(Relaxed) {
-            if let Err(e) = self.session(&url, &user, &pass) {
-                eprintln!("pool: {e}; reconnecting in 5s");
-            }
-            *self.conn.lock().unwrap() = None;
-            std::thread::sleep(Duration::from_secs(5));
+        if let Some(tx) = self.shares.lock().unwrap().as_ref() {
+            let _ = tx.send(Share { job_id: job_id.to_string(), nonce, hash: *hash });
         }
     }
 
-    fn session(&self, url: &str, user: &str, pass: &str) -> Result<(), String> {
-        let stream = TcpStream::connect(url).map_err(|e| e.to_string())?;
-        stream.set_read_timeout(Some(Duration::from_secs(90))).ok();
-        let mut reader = BufReader::new(stream.try_clone().map_err(|e| e.to_string())?);
-        *self.conn.lock().unwrap() = Some(Conn { stream, session: String::new() });
-        self.send(&json!({
+    fn pool(self: Arc<Self>, endpoints: Vec<net::Endpoint>, user: String, pass: String) {
+        let mut i = 0;
+        while !self.stop.load(Relaxed) {
+            let ep = &endpoints[i % endpoints.len()];
+            match self.session(ep, &user, &pass) {
+                Ok(()) => {}
+                Err(e) => eprintln!("pool {ep}: {e}"),
+            }
+            *self.shares.lock().unwrap() = None;
+            i += 1;
+            std::thread::sleep(Duration::from_secs(if i % endpoints.len() == 0 { 5 } else { 1 }));
+        }
+    }
+
+    fn session(&self, ep: &net::Endpoint, user: &str, pass: &str) -> Result<(), String> {
+        let mut conn = net::Conn::connect(ep)?;
+        let (tx, rx) = mpsc::channel::<Share>();
+        let mut session = String::new();
+        conn.send_line(&json!({
             "id": 1, "jsonrpc": "2.0", "method": "login",
             "params": {"login": user, "pass": pass, "agent": "pasiv-rx/0.0.1", "algo": ["rx/0"]}
-        }));
+        }).to_string())?;
         let mut last_ping = Instant::now();
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) => return Err("pool closed the connection".into()),
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut => {}
-                Err(e) => return Err(e.to_string()),
+        let mut last_heard = Instant::now();
+        while !self.stop.load(Relaxed) {
+            while let Ok(s) = rx.try_recv() {
+                let id = self.next_id.fetch_add(1, Relaxed);
+                conn.send_line(&json!({
+                    "id": id, "jsonrpc": "2.0", "method": "submit",
+                    "params": {"id": session, "job_id": s.job_id,
+                               "nonce": hex(&s.nonce.to_le_bytes()), "result": hex(&s.hash)}
+                }).to_string())?;
             }
-            if last_ping.elapsed() > Duration::from_secs(60) {
-                let session = self.conn.lock().unwrap().as_ref().map(|c| c.session.clone());
-                if let Some(s) = session {
-                    let id = self.next_id.fetch_add(1, Relaxed);
-                    self.send(&json!({"id": id, "jsonrpc": "2.0", "method": "keepalived", "params": {"id": s}}));
-                }
+            if !session.is_empty() && last_ping.elapsed() > Duration::from_secs(60) {
+                let id = self.next_id.fetch_add(1, Relaxed);
+                conn.send_line(&json!({"id": id, "jsonrpc": "2.0", "method": "keepalived", "params": {"id": session}}).to_string())?;
                 last_ping = Instant::now();
             }
-            let Ok(msg) = serde_json::from_str::<Value>(line.trim()) else { continue };
+            if last_heard.elapsed() > Duration::from_secs(180) {
+                return Err("pool silent for 3 minutes".into());
+            }
+            let Some(line) = conn.read_line()? else { continue };
+            last_heard = Instant::now();
+            let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
             if msg["method"] == "job" {
                 self.on_job(&msg["params"]);
             } else if msg["id"] == 1 {
@@ -294,10 +288,9 @@ impl Miner {
                     return Err(format!("login refused: {}", msg["error"]));
                 }
                 let r = &msg["result"];
-                if let Some(c) = self.conn.lock().unwrap().as_mut() {
-                    c.session = r["id"].as_str().unwrap_or_default().to_string();
-                }
-                eprintln!("logged in");
+                session = r["id"].as_str().unwrap_or_default().to_string();
+                eprintln!("logged in to {ep}");
+                *self.shares.lock().unwrap() = Some(tx.clone());
                 self.on_job(&r["job"]);
             } else if msg["id"].as_u64().is_some_and(|i| i >= 10) {
                 if msg["error"].is_null() {
@@ -310,6 +303,7 @@ impl Miner {
                 }
             }
         }
+        Ok(())
     }
 
     fn on_job(&self, v: &Value) {
@@ -343,11 +337,20 @@ fn main() {
         m.ensure_seed(&seed);
         m.set_job(Job { id: "bench".into(), blob: vec![7u8; 76], target: 0, seed });
     } else {
-        let url = arg(&args, "--url").expect("--url host:port");
+        let mut endpoints: Vec<net::Endpoint> = Vec::new();
+        for w in args.windows(2) {
+            if w[0] == "--url" {
+                endpoints.push(net::parse_endpoint(&w[1]).expect("--url [tls://]host:port"));
+            } else if w[0] == "--tls-fingerprint" {
+                endpoints.last_mut().expect("--tls-fingerprint follows a --url").fingerprint =
+                    Some(w[1].clone());
+            }
+        }
+        assert!(!endpoints.is_empty(), "--url [tls://]host:port");
         let user = arg(&args, "--user").expect("--user LOGIN");
         let pass = arg(&args, "--pass").unwrap_or_else(|| "x".into());
         let mp = m.clone();
-        std::thread::spawn(move || mp.pool(url, user, pass));
+        std::thread::spawn(move || mp.pool(endpoints, user, pass));
     }
     let workers: Vec<_> = (0..threads as u32)
         .map(|i| {
