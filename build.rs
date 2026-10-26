@@ -32,6 +32,9 @@ fn main() {
     let env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     if target == "macos" {
         println!("cargo:rustc-link-lib=c++");
+    } else if env == "musl" {
+        // pasivd's static build: no libstdc++.so on the box to load.
+        println!("cargo:rustc-link-lib=static=stdc++");
     } else if env != "msvc" {
         println!("cargo:rustc-link-lib=stdc++");
     }

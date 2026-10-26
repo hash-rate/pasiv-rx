@@ -59,3 +59,40 @@ jobs:
         with:
           name: pasiv-rx-${{ matrix.target }}
           path: out/
+
+  # Static musl build for pasivd (headless Linux), which ships one static
+  # binary that has to run on any x86-64 distro, old glibc or none.
+  musl:
+    timeout-minutes: 30
+    runs-on: ubuntu-22.04
+    container: rust:1-alpine3.22
+    steps:
+      - run: apk add --no-cache cmake make g++ file git bash tar
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - run: cargo test --release --locked --target x86_64-unknown-linux-musl
+      - run: cargo build --release --locked --target x86_64-unknown-linux-musl
+      - name: statically linked
+        run: file target/x86_64-unknown-linux-musl/release/pasiv-rx | grep -q 'static' || { echo "not static" >&2; exit 1; }
+      - name: smoke (bench 30 s, 2 threads)
+        run: ./target/x86_64-unknown-linux-musl/release/pasiv-rx --bench -t 2 --seconds 30
+      - name: package
+        shell: bash
+        run: |
+          V=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          mkdir -p out
+          cp target/x86_64-unknown-linux-musl/release/pasiv-rx LICENSE THIRD-PARTY-NOTICES.md out/
+          cp vendor/RandomX/LICENSE out/LICENSE-RandomX
+          {
+            echo "pasiv_rx_version=$V"
+            echo "commit=$GITHUB_SHA"
+            echo "target=x86_64-unknown-linux-musl"
+            echo "rustc=$(rustc --version)"
+            echo "randomx=1.2.1"
+            echo "run=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } > out/BUILD-INFO.txt
+          git archive --format=tar.gz --prefix="pasiv-rx-$V/" -o "out/pasiv-rx-$V-source.tar.gz" HEAD
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pasiv-rx-x86_64-unknown-linux-musl
+          path: out/

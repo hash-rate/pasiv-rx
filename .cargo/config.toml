@@ -2,3 +2,7 @@
 # miner that can't start there fails silently from the user's point of view.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# pasivd ships one static binary that runs on any x86-64 Linux.
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+crt-static"]
