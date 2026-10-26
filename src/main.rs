@@ -87,7 +87,7 @@ fn hex(b: &[u8]) -> String {
 }
 
 fn unhex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len())
@@ -680,7 +680,7 @@ fn main() {
         std::thread::sleep(Duration::from_secs(1));
         m.sample();
         tick += 1;
-        if tick % 60 == 0 {
+        if tick.is_multiple_of(60) {
             let f = |r: Option<f64>| r.map_or("n/a".to_string(), |v| format!("{v:.1}"));
             log(
                 "miner",

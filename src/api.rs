@@ -95,17 +95,22 @@ fn respond(s: &mut TcpStream, status: &str, body: Option<&Value>) -> std::io::Re
 }
 
 /// Constant-time compare, so the token can't be learned a byte at a time.
+/// XMRig's error body shape, so clients that parse XMRig's replies read ours.
+fn error(code: u16, name: &str) -> Value {
+    json!({"status": code, "error": name})
+}
+
 fn same(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 fn handle(m: &Miner, mut s: TcpStream, token: Option<&str>) -> std::io::Result<()> {
     let Some(req) = read_request(&mut s) else {
-        return respond(&mut s, "400 Bad Request", None);
+        return respond(&mut s, "400 Bad Request", Some(&error(400, "BAD_REQUEST")));
     };
     if let Some(t) = token {
         if !req.auth.as_deref().is_some_and(|a| same(a, t)) {
-            return respond(&mut s, "401 Unauthorized", Some(&json!({"error": "unauthorized"})));
+            return respond(&mut s, "401 Unauthorized", Some(&error(401, "UNAUTHORIZED")));
         }
     }
     match (req.method.as_str(), req.path.as_str()) {
@@ -113,11 +118,14 @@ fn handle(m: &Miner, mut s: TcpStream, token: Option<&str>) -> std::io::Result<(
         ("GET", "/1/config" | "/2/config") => respond(&mut s, "200 OK", Some(&m.config_json())),
         ("PUT", "/1/config" | "/2/config") => {
             let Ok(v) = serde_json::from_slice::<Value>(&req.body) else {
-                return respond(&mut s, "400 Bad Request", Some(&json!({"error": "invalid JSON"})));
+                return respond(&mut s, "400 Bad Request", Some(&error(400, "BAD_REQUEST")));
             };
             match m.apply_config(&v) {
                 Ok(()) => respond(&mut s, "204 No Content", None),
-                Err(e) => respond(&mut s, "400 Bad Request", Some(&json!({"error": e}))),
+                Err(e) => {
+                    crate::log("api", &format!("rejected config: {e}"));
+                    respond(&mut s, "400 Bad Request", Some(&error(400, "BAD_REQUEST")))
+                }
             }
         }
         ("POST", "/json_rpc") => {
@@ -136,6 +144,6 @@ fn handle(m: &Miner, mut s: TcpStream, token: Option<&str>) -> std::io::Result<(
             }
             respond(&mut s, "200 OK", Some(&json!({"id": id, "jsonrpc": "2.0", "result": {"status": "OK"}})))
         }
-        _ => respond(&mut s, "404 Not Found", Some(&json!({"error": "not found"}))),
+        _ => respond(&mut s, "404 Not Found", Some(&error(404, "NOT_FOUND"))),
     }
 }

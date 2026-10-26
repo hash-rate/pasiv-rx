@@ -1,6 +1,6 @@
 [package]
 name = "pasiv-rx"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "GPL-3.0-only"
 description = "Spike: Pasiv's own RandomX CPU miner (tevador/RandomX, BSD-3) with a minimal pool client"
