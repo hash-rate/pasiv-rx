@@ -1,0 +1,29 @@
+# Builds only on a tag or by hand: Actions minutes are billed (Windows at 2x),
+# and the signed binary is cut from a tagged build, never from a branch.
+name: build
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+jobs:
+  build:
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        include:
+          - os: windows-2022
+            exe: pasiv-rx.exe
+          - os: ubuntu-22.04
+            exe: pasiv-rx
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked
+      - name: smoke (bench 30 s, 2 threads)
+        shell: bash
+        run: ./target/release/${{ matrix.exe }} --bench --threads 2 --seconds 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pasiv-rx-${{ matrix.os }}
+          path: target/release/${{ matrix.exe }}
