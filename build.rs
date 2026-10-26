@@ -8,8 +8,19 @@ fn main() {
     // on MSVC carry no optimisation level: RandomX's AES fill and Blake2 then
     // run unoptimised, measured at 52% of XMRig on the tower. Pin it.
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        // Match Rust's CRT: static (/MT) under +crt-static (.cargo/config.toml).
+        let crt_static = std::env::var("CARGO_CFG_TARGET_FEATURE")
+            .unwrap_or_default()
+            .split(',')
+            .any(|f| f == "crt-static");
+        let rt = if crt_static { "/MT" } else { "/MD" };
+        cfg.define(
+            "CMAKE_MSVC_RUNTIME_LIBRARY",
+            if crt_static { "MultiThreaded" } else { "MultiThreadedDLL" },
+        );
+        cfg.static_crt(crt_static);
         for lang in ["C", "CXX"] {
-            cfg.define(format!("CMAKE_{lang}_FLAGS_RELEASE"), "/MD /O2 /Ob2 /DNDEBUG");
+            cfg.define(format!("CMAKE_{lang}_FLAGS_RELEASE"), format!("{rt} /O2 /Ob2 /DNDEBUG"));
         }
     }
     let dst = cfg.build();

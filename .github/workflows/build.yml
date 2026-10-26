@@ -1,5 +1,7 @@
 # Builds only on a tag or by hand: Actions minutes are billed (Windows at 2x),
 # and the signed binary is cut from a tagged build, never from a branch.
+# Signing happens on the control Mac (pasiv: tool/cpu-engine-release.sh) —
+# CI never holds the key.
 name: build
 on:
   workflow_dispatch:
@@ -12,18 +14,45 @@ jobs:
       matrix:
         include:
           - os: windows-2022
+            target: x86_64-pc-windows-msvc
             exe: pasiv-rx.exe
           - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
             exe: pasiv-rx
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --release --locked
       - run: cargo build --release --locked
+      - name: no dynamic MSVC runtime
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          if grep -aqi 'VCRUNTIME140' target/release/pasiv-rx.exe; then
+            echo "pasiv-rx.exe imports VCRUNTIME140 — the static CRT did not apply" >&2; exit 1
+          fi
       - name: smoke (bench 30 s, 2 threads)
         shell: bash
-        run: ./target/release/${{ matrix.exe }} --bench --threads 2 --seconds 30
+        run: ./target/release/${{ matrix.exe }} --bench -t 2 --seconds 30
+      - name: package
+        shell: bash
+        run: |
+          V=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          mkdir -p out
+          cp target/release/${{ matrix.exe }} LICENSE THIRD-PARTY-NOTICES.md out/
+          cp vendor/RandomX/LICENSE out/LICENSE-RandomX
+          {
+            echo "pasiv_rx_version=$V"
+            echo "commit=$GITHUB_SHA"
+            echo "target=${{ matrix.target }}"
+            echo "rustc=$(rustc --version)"
+            echo "randomx=1.2.1"
+            echo "run=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } > out/BUILD-INFO.txt
+          # GPL-3.0: the exact corresponding source travels with every build.
+          git archive --format=tar.gz --prefix="pasiv-rx-$V/" -o "out/pasiv-rx-$V-source.tar.gz" HEAD
       - uses: actions/upload-artifact@v4
         with:
-          name: pasiv-rx-${{ matrix.os }}
-          path: target/release/${{ matrix.exe }}
+          name: pasiv-rx-${{ matrix.target }}
+          path: out/

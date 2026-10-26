@@ -1,0 +1,4 @@
+# Static MSVC runtime: a fresh Windows may have no vcruntime140.dll, and a
+# miner that can't start there fails silently from the user's point of view.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
